@@ -4,6 +4,7 @@ import asyncio
 from typing import Dict, List, Optional, AsyncGenerator, Any, Tuple, Union
 from loguru import logger
 import time
+import re
 
 # --- Add Fish Audio SDK imports ---
 from fish_audio_sdk import Session as FishSession, TTSRequest
@@ -50,8 +51,11 @@ def convert_messages_to_gemini(messages: List[Dict[str, Any]]) -> Tuple[List[Dic
             current_role = "model"
             if parts:
                 current_parts = parts
+            elif content:
+                # 转换content为parts格式
+                current_parts = [{"text": content}]
             else:
-                logger.warning(f"Model/Assistant message at index {i} missing 'parts'. Skipping.")
+                logger.warning(f"Model/Assistant message at index {i} missing 'parts' and 'content'. Skipping.")
                 continue
 
         elif role == "tool":
@@ -476,11 +480,16 @@ class GeminiClient:
             for part in parts:
                 if "functionCall" in part:
                     fc = part["functionCall"]
+                    # 确保生成一个唯一的ID，不依赖于参数内容（可能过长的代码会导致哈希不稳定）
+                    tool_id = f"call_{len(tool_calls)}_{int(time.time()) % 10000}"
+                    
+                    # 正确处理各种参数类型，包括嵌套结构
+                    arguments = fc.get("args", {})
+                    
                     tool_calls.append({
-                        # Generate a simple ID, though Gemini doesn't provide one directly
-                        "id": f"call_{hash(fc.get('name') + json.dumps(fc.get('args', {}))) % 10000}",
+                        "id": tool_id,
                         "name": fc.get("name"),
-                        "arguments": fc.get("args", {}) # Gemini uses 'args'
+                        "arguments": arguments
                     })
                 elif "text" in part:
                     message_content += part["text"] + "\n"
@@ -520,60 +529,138 @@ class TTSClient:
         
         self.api_key = api_key
         self.default_reference_id = default_reference_id
+        self.reference_id = default_reference_id  # 添加reference_id属性
         # SDK handles session internally, but we might create one instance 
         # Be mindful of potential issues if not used in async context correctly
         # For async usage, creating session per request might be safer
         # self.session = FishSession(api_key=self.api_key)
         logger.info(f"Fish Audio TTS客户端初始化完成 (API Key: ...{api_key[-4:]})")
 
+    def clean_text_for_tts(self, text):
+        """清理文本，移除不适合TTS的符号和格式"""
+        if not text:
+            return ""
+            
+        # 去除零宽字符
+        text = text.replace('\u200b', '').replace('\u200c', '')
+        
+        # 移除markdown格式符号
+        text = re.sub(r'\*\*(.*?)\*\*', r'\1', text)  # 移除粗体 **text**
+        text = re.sub(r'\*(.*?)\*', r'\1', text)      # 移除斜体 *text*
+        text = re.sub(r'__(.*?)__', r'\1', text)      # 移除粗体 __text__
+        text = re.sub(r'_(.*?)_', r'\1', text)        # 移除斜体 _text_
+        text = re.sub(r'`(.*?)`', r'\1', text)        # 移除代码 `code`
+        
+        # 移除项目符号，保留内容
+        text = re.sub(r'^\s*[*\-+]\s+', '', text, flags=re.MULTILINE)
+        
+        # 替换多个连续空行为一个单换行
+        text = re.sub(r'\n\s*\n\s*\n+', '\n\n', text)
+        
+        # 替换制表符为空格
+        text = text.replace('\t', ' ')
+        
+        # 统一换行符
+        text = text.replace('\r\n', '\n').replace('\r', '\n')
+        
+        # 将多个连续空格替换为一个
+        text = re.sub(r' {2,}', ' ', text)
+        
+        # 清理行首行尾空白
+        text = '\n'.join([line.strip() for line in text.split('\n')])
+        
+        return text
+
     # --- Helper function to run sync generator in thread ---
     def _collect_audio_sync(self, session: FishSession, request: TTSRequest) -> bytes:
          """Synchronously iterates over the TTS generator and collects audio chunks."""
          audio_buffer = io.BytesIO()
-         # Use standard for loop here
-         for chunk in session.tts(request):
-              if chunk:
-                   audio_buffer.write(chunk)
+         chunk_count = 0
+         total_bytes = 0
+         
+         try:
+             # 使用带有超时的方式收集音频数据
+             for chunk in session.tts(request):
+                  if chunk:
+                       audio_buffer.write(chunk)
+                       chunk_count += 1
+                       total_bytes += len(chunk)
+             logger.debug(f"Fish Audio TTS: 收集了 {chunk_count} 个数据块, 总计 {total_bytes} 字节")
+         except Exception as e:
+             logger.error(f"Fish Audio TTS: 收集音频块时出错: {e}")
+             
+         # 确保获取完整数据
+         if chunk_count == 0 or total_bytes == 0:
+             logger.warning("Fish Audio TTS: 未收集到任何音频数据")
+         
          return audio_buffer.getvalue()
 
-    async def text_to_speech(self, 
-                             text: str, 
-                             reference_id: Optional[str] = None, 
-                             format: str = "mp3",
-                             ) -> Optional[bytes]:
-        """使用 Fish Audio SDK 将文本转换为语音 (在线程中执行同步迭代)"""
-        
-        target_reference_id = reference_id or self.default_reference_id
-        if not target_reference_id:
-            logger.error("TTS 错误: 未提供 Reference ID。")
-            return None
+    async def text_to_speech(self, text: str, format: str = "mp3") -> Optional[bytes]:
+        """将文本转换为语音
 
+        Args:
+            text: 要转换的文本
+            format: 音频格式 (mp3, wav, pcm)
+
+        Returns:
+            bytes: 音频数据
+        """
+        if not text:
+            logger.warning("TTS请求文本为空")
+            return None
+            
+        # 确保使用SDK支持的格式
+        supported_formats = ["mp3", "wav", "pcm"]
+        if format.lower() not in supported_formats:
+            logger.warning(f"不支持的格式: {format}，将使用默认mp3格式")
+            format = "mp3"
+            
+        # 文本截断和处理
+        max_length = 1500  # 安全的最大文本长度
+        cleaned_text = self.clean_text_for_tts(text)  # 先清理文本
+        
+        if len(cleaned_text) > max_length:
+            logger.warning(f"TTS请求文本过长: {len(cleaned_text)}字符，已截断到{max_length}字符")
+            cleaned_text = cleaned_text[:max_length] + "..."
+        
+        logger.debug(f"Fish TTS请求文本(已清理): '{cleaned_text}' (长度:{len(cleaned_text)}字符)")
+        
         try:
-            # Create session and request objects (these are typically lightweight)
+            # 创建新会话处理每次请求，避免复用问题
             session = FishSession(self.api_key)
+            
+            # 构建请求对象
             request = TTSRequest(
-                reference_id=target_reference_id,
-                text=text,
-                format=format,
+                reference_id=self.default_reference_id,
+                text=cleaned_text,
+                format=format.lower()
             )
             
-            logger.debug(f"发送 Fish Audio TTS 请求: ReferenceID={target_reference_id}, Format={format}")
+            # 记录开始请求TTS的时间
+            start_time = time.time()
             
-            # Run the synchronous generator iteration in a separate thread
-            # This prevents blocking the main asyncio event loop
-            audio_data = await asyncio.to_thread(
-                 self._collect_audio_sync, session, request
-            )
-            
-            if not audio_data:
-                 logger.warning("Fish Audio TTS 未返回任何音频数据。")
-                 return None
-                 
-            logger.info(f"Fish Audio TTS 请求成功，收到 {len(audio_data)} 字节音频数据。")
-            return audio_data
-            
+            # 在线程中同步收集音频数据
+            try:
+                audio_bytes = await asyncio.wait_for(
+                    asyncio.to_thread(self._collect_audio_sync, session, request),
+                    timeout=30.0  # 30秒超时保护
+                )
+            except asyncio.TimeoutError:
+                logger.error("Fish Audio TTS 请求超时(30秒)")
+                return None
+                
+            # 记录请求完成的时间和音频大小
+            end_time = time.time()
+            request_time = end_time - start_time
+                
+            if audio_bytes and len(audio_bytes) > 100:
+                logger.info(f"TTS请求成功，获取到{len(audio_bytes)}字节的音频数据，请求耗时{request_time:.2f}秒")
+                return audio_bytes
+            else:
+                logger.error(f"TTS请求成功但返回的音频数据无效或过小: {len(audio_bytes) if audio_bytes else 0}字节")
+                return None
         except Exception as e:
-            logger.exception(f"调用 Fish Audio SDK 或处理音频时发生错误: {e}")
+            logger.exception(f"TTS请求失败: {str(e)}")
             return None
 
 # --- MiniMax T2A v2 客户端实现 ---
@@ -601,6 +688,41 @@ class MinimaxTTSClient:
         self.base_url = base_url
         logger.info(f"MiniMax T2A v2 客户端初始化完成 (API Key: ...{api_key[-4:]})")
     
+    def clean_text_for_tts(self, text):
+        """清理文本，移除不适合TTS的符号和格式"""
+        if not text:
+            return ""
+            
+        # 去除零宽字符
+        text = text.replace('\u200b', '').replace('\u200c', '')
+        
+        # 移除markdown格式符号
+        text = re.sub(r'\*\*(.*?)\*\*', r'\1', text)  # 移除粗体 **text**
+        text = re.sub(r'\*(.*?)\*', r'\1', text)      # 移除斜体 *text*
+        text = re.sub(r'__(.*?)__', r'\1', text)      # 移除粗体 __text__
+        text = re.sub(r'_(.*?)_', r'\1', text)        # 移除斜体 _text_
+        text = re.sub(r'`(.*?)`', r'\1', text)        # 移除代码 `code`
+        
+        # 移除项目符号，保留内容
+        text = re.sub(r'^\s*[*\-+]\s+', '', text, flags=re.MULTILINE)
+        
+        # 替换多个连续空行为一个单换行
+        text = re.sub(r'\n\s*\n\s*\n+', '\n\n', text)
+        
+        # 替换制表符为空格
+        text = text.replace('\t', ' ')
+        
+        # 统一换行符
+        text = text.replace('\r\n', '\n').replace('\r', '\n')
+        
+        # 将多个连续空格替换为一个
+        text = re.sub(r' {2,}', ' ', text)
+        
+        # 清理行首行尾空白
+        text = '\n'.join([line.strip() for line in text.split('\n')])
+        
+        return text
+
     async def text_to_speech(self,
                             text: str,
                             voice_id: str = "male-qn-qingse",
@@ -649,11 +771,22 @@ class MinimaxTTSClient:
             sample_rate_int = int(sample_rate)
             bitrate_int = int(bitrate)
             
-            # 将浮点数转换为整数（MiniMax可能需要整数值）
-            # 如果API需要浮点数值，可能需要调整回来
-            speed_int = int(speed)
-            vol_int = int(vol)
-            pitch_int = int(pitch)
+            # 将浮点数参数转换为整数，MiniMax API期望整数类型
+            # 根据错误信息，它期望int64类型而不是浮点数
+            speed_int = int(speed * 100)  # 转换为整数百分比
+            vol_int = int(vol * 100)      # 转换为整数百分比
+            pitch_int = int(pitch * 100)  # 转换为整数百分比
+            
+            # 清理文本，去除潜在的特殊字符和多余的空白
+            text = self.clean_text_for_tts(text)
+            
+            # 文本长度检查和截断
+            if len(text) > 2000:
+                logger.warning(f"文本过长({len(text)}字符)，将被截断至2000字符")
+                text = text[:2000]
+                
+            # 记录完整的TTS文本内容用于调试
+            logger.debug(f"TTS完整文本内容: '{text}' (长度:{len(text)}字符)")
             
             # 构建请求体
             payload = {
@@ -685,7 +818,20 @@ class MinimaxTTSClient:
             if pronunciation_dict:
                 payload["pronunciation_dict"] = pronunciation_dict
                 
+            # 记录最终请求内容检查
             logger.debug(f"发送 MiniMax T2A v2 请求: VoiceID={voice_id}, Model={model}, Format={format}, SampleRate={sample_rate_int}, Bitrate={bitrate_int}, Speed={speed_int}, Vol={vol_int}, Pitch={pitch_int}")
+            
+            # 检查请求体中的文本是否完整
+            payload_text = payload["text"]
+            if len(payload_text) != len(text):
+                logger.error(f"请求体中的文本长度({len(payload_text)})与原始文本长度({len(text)})不一致，可能发生截断")
+                
+            # 检查最终请求体的文本内容，看是否与原始文本一致
+            logger.debug(f"请求体中的文本内容: '{payload_text[:50]}...{payload_text[-50:] if len(payload_text) > 50 else ''}' (长度:{len(payload_text)}字符)")
+            
+            # 记录完整的请求体，便于调试
+            request_json = json.dumps(payload, ensure_ascii=False)
+            logger.debug(f"完整请求体内容长度: {len(request_json)}字节")
             
             # 如果是流式请求，使用不同的处理方式
             if stream:
@@ -718,7 +864,13 @@ class MinimaxTTSClient:
                 
                 audio_length = result.get("extra_info", {}).get("audio_length", 0)
                 audio_size = result.get("extra_info", {}).get("audio_size", 0)
-                logger.info(f"MiniMax T2A v2 请求成功，音频长度: {audio_length}ms, 大小: {audio_size}字节")
+                text_length = result.get("extra_info", {}).get("text_length", 0)  # 检查服务端实际处理的文本长度
+                
+                # 检查服务端实际处理的文本长度与我们发送的长度是否一致
+                if text_length > 0 and text_length != len(text):
+                    logger.warning(f"服务端处理的文本长度({text_length})与发送的文本长度({len(text)})不一致，可能存在截断")
+                
+                logger.info(f"MiniMax T2A v2 请求成功，音频长度: {audio_length}ms, 大小: {audio_size}字节, 处理文本长度: {text_length}字符")
                 
                 return audio_data
             else:
@@ -754,9 +906,27 @@ class MinimaxTTSClient:
             # 获取并确保所有数值参数都是整数类型
             sample_rate = int(kwargs.get("sample_rate", 32000))
             bitrate = int(kwargs.get("bitrate", 128000))
-            speed = int(kwargs.get("speed", 1.0))
-            vol = int(kwargs.get("vol", 1.0))
-            pitch = int(kwargs.get("pitch", 0.0))
+            
+            # 将浮点数参数转换为整数，与非流式方法保持一致
+            speed_raw = float(kwargs.get("speed", 1.0))
+            vol_raw = float(kwargs.get("vol", 1.0))
+            pitch_raw = float(kwargs.get("pitch", 0.0))
+            
+            # 转换为整数百分比
+            speed = int(speed_raw * 100)
+            vol = int(vol_raw * 100)
+            pitch = int(pitch_raw * 100)
+            
+            # 清理文本，去除特殊格式符号
+            text = self.clean_text_for_tts(text)
+            
+            # 文本长度检查
+            if len(text) > 2000:
+                logger.warning(f"流式TTS: 文本过长({len(text)}字符)，将被截断至2000字符")
+                text = text[:2000]
+                
+            # 记录完整的TTS文本内容用于调试
+            logger.debug(f"流式TTS完整文本内容: '{text}' (长度:{len(text)}字符)")
             
             # 构建请求体 - 其他参数通过kwargs传入
             payload = {
