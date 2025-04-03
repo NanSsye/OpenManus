@@ -13,7 +13,6 @@ from loguru import logger
 from datetime import datetime
 import time
 import re
-import sys # 导入sys模块，用于设置日志级别
 
 from WechatAPI import WechatAPIClient
 from utils.decorators import on_text_message, on_at_message
@@ -136,9 +135,6 @@ class OpenManus(PluginBase):
         self.enabled = self.config.get("basic", {}).get("enable", True)
         self.trigger_word = self.config.get("basic", {}).get("trigger_keyword", "agent")
         
-        # 配置日志级别
-        self._setup_logging()
-        
         # Gemini API 配置
         gemini_config = self.config.get("gemini", {})
         self.gemini_api_key = gemini_config.get("api_key", "")
@@ -222,48 +218,13 @@ class OpenManus(PluginBase):
         
         logger.info(f"OpenManus插件(Gemini+TTS)初始化完成，版本: {self.version}")
         
-    def _setup_logging(self):
-        """根据配置设置日志级别"""
-        # 获取日志配置
-        log_config = self.config.get("logging", {})
-        log_level = log_config.get("log_level", "INFO")
-        show_debug = log_config.get("show_debug", False)
-        
-        # 设置日志级别
-        level_map = {
-            "DEBUG": 10,
-            "INFO": 20,
-            "WARNING": 30,
-            "ERROR": 40,
-            "CRITICAL": 50
-        }
-        
-        # 获取配置的日志级别，默认为INFO
-        level = level_map.get(log_level.upper(), 20)
-        
-        # 如果不显示DEBUG日志，且配置的日志级别小于INFO，则使用INFO级别
-        if not show_debug and level < 20:
-            level = 20
-        
-        # 移除默认的日志处理器
-        logger.remove()
-        
-        # 添加新的日志处理器，设置日志级别
-        logger.add(sys.stderr, level=level)
-        
-        logger.debug(f"日志级别已设置为: {log_level}")
-        
-        # 日志配置信息
-        self.log_tts_details = log_config.get("log_tts_details", False)
-        self.log_api_responses = log_config.get("log_api_responses", False)
-        
     def _load_config(self, config_path: str) -> Dict:
         """加载配置文件"""
         try:
             with open(config_path, "rb") as f:
                 return tomli.load(f)
         except FileNotFoundError:
-             logger.error(f"配置文件 {config_path} 未找到，使用默认配置。")
+            logger.error(f"配置文件 {config_path} 未找到，使用默认配置。")
         except Exception as e:
             logger.error(f"加载配置文件失败: {str(e)}，使用默认配置。")
             
