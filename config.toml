@@ -151,13 +151,3 @@ system_prompt = """
 # 对话开始时的欢迎语（可选）
 #greeting = "您好！我是OpenManus智能助手，有什么可以帮您的吗？" 
 
-# --- 新增日志配置 ---
-[logging]
-# 日志级别: DEBUG, INFO, WARNING, ERROR, CRITICAL
-log_level = "INFO"
-# 是否在控制台显示详细的DEBUG级别日志
-show_debug = false
-# 是否记录TTS处理和发送的详细日志
-log_tts_details = false
-# 是否记录API响应的详细信息
-log_api_responses = false 
