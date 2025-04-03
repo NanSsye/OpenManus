@@ -458,8 +458,6 @@ loguru>=0.6.0
 pydub>=0.25.1
 aiofiles>=23.1.0
 
-# Gemini SDK（用于上下文对话）
-google-generativeai>=0.3.0
 
 # 音频处理依赖
 fish-audio-sdk>=1.0.0  # Fish Audio TTS（可选）
@@ -485,13 +483,7 @@ python-dateutil>=2.8.2  # 日期时间工具
 2. 创建 API Token 并获取密钥
 3. 将密钥填入`config.toml`的`weather_api_key`字段
 
-### 上下文对话问题
 
-如果上下文对话功能不工作，请检查:
-
-1. `gemini.use_sdk`是否设置为`true`
-2. 是否已安装 Google Generative AI SDK (`pip install google-generativeai`)
-3. `memory.enable_memory`是否设置为`true`
 
 ### 语音合成问题
 
