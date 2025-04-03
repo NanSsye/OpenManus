@@ -25,6 +25,12 @@ api_key = ""      # 填入你的 Google AI Studio 或 Vertex AI API Key
 # Gemini API 端点 (Google AI Studio 示例, Vertex AI 不同)
 base_url = "https://generativelanguage.googleapis.com/v1beta"
 
+# 代理设置
+[proxy]
+enable = false             # 是否启用代理
+url = "http://127.0.0.1:7890"  # 代理服务器地址，支持http/https/socks5格式
+timeout = 60              # 代理连接超时时间(秒)
+
 [agent]
 # 代理配置
 default_model = "gemini-2.0-flash"  # 默认使用的 Gemini 模型
