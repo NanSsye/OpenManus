@@ -1,0 +1,142 @@
+[basic]
+# 是否启用插件
+enable = true
+# 触发关键词，以此开头的消息将被转发到AI处理
+trigger_keyword = "agent"
+# 是否在群聊中自动响应被@消息
+respond_to_at = true
+# 是否允许私聊使用
+allow_private_chat = true
+
+# 屏蔽机制
+[block]
+sensitive_words = ["暴力", "色情", "政治", "违法"]  # 敏感词屏蔽列表
+block_continuous_request = true     # 是否屏蔽连续请求
+block_continuous_timeout = 5        # 连续请求屏蔽超时(秒)
+
+# --- 原有 OpenAI/Chargpt API 配置 (注释掉) ---
+# [api]
+# openai_api_token = "YOUR_OPENAI_API_KEY"  # 替换为你的OpenAI API密钥
+# base_url = "https://api.openai.com/v1"
+
+# --- 新增 Gemini API 配置 ---
+[gemini]
+api_key = ""      # 填入你的 Google AI Studio 或 Vertex AI API Key
+# Gemini API 端点 (Google AI Studio 示例, Vertex AI 不同)
+base_url = "https://generativelanguage.googleapis.com/v1beta"
+
+[agent]
+# 代理配置
+default_model = "gemini-2.0-flash"  # 默认使用的 Gemini 模型
+max_steps = 10            # 最大执行步骤数
+max_tokens = 8192         # 每次请求的最大输出token数 (Gemini 通常有更大的限制)
+temperature = 0.7         # 温度参数 (建议值，可以调整)
+
+[mcp]
+# MCP代理配置
+enable_mcp = true        # 是否启用MCP代理
+thinking_steps = 3       # 思考步骤数量 (可以适当减少测试Gemini性能)
+task_planning = true     # 是否启用任务规划 (此项在当前MCP实现中可能未完全使用)
+
+[tools]
+# 工具配置
+enable_search = true     # 是否启用搜索工具
+enable_calculator = true # 是否启用计算器工具
+enable_datetime = true   # 是否启用日期时间工具
+enable_weather = true    # 是否启用天气工具(需要API密钥)
+search_engine = "serper"  # 搜索引擎类型: bing 或 serper
+bing_api_key = ""        # Bing搜索API密钥
+serper_api_key = ""      # Serper.dev API密钥
+
+[search]
+# 搜索工具配置
+bing_url = "https://api.bing.microsoft.com/v7.0/search"  # Bing搜索API地址
+serper_url = "https://google.serper.dev/search"          # Serper.dev搜索API地址
+
+[weather]
+# 天气工具配置
+api_key = ""             # ALAPI天气API密钥(token)
+base_url = "https://v3.alapi.cn/api"  # ALAPI基础URL
+weather_url = "https://v3.alapi.cn/api/tianqi"          # 实时天气API地址
+forecast_url = "https://v3.alapi.cn/api/tianqi/seven"   # 7天天气预报API地址
+index_url = "https://v3.alapi.cn/api/tianqi/index"      # 天气指数API地址
+
+[memory]
+# 记忆配置
+enable_memory = true     # 是否启用记忆功能
+max_history = 20         # 最大历史记录条数
+separate_context = true  # 是否为不同会话维护单独的上下文
+memory_expire_hours = 24 # 记忆保留时间(小时)，超过此时间的对话将被遗忘
+
+# 敏感词过滤
+[blocking]
+enable = true                       # 是否启用敏感词过滤
+sensitive_words = ["敏感词1", "敏感词2", "违禁词", "色情", "暴力", "政治"] # 敏感词列表
+
+# 连续请求屏蔽 (将此部分合并或确保配置正确，这里假设保留上面 [block] 的内容)
+# [block] # <--- 如果上面的 [blocking] 是正确的，这个 [block] 可能也需要调整或合并
+# block_continuous_request = true     # 是否屏蔽连续请求
+# block_continuous_timeout = 5        # 连续请求屏蔽超时(秒)
+
+# --- 新增 TTS 配置节 ---
+[tts]
+# 是否启用 TTS 功能
+enable = true
+# TTS API 的 Base URL (SDK 通常不需要，但保留以备参考)
+base_url = "https://api.fish.audio"
+# TTS API 的 Key
+api_key = ""
+# --- 指定你的自定义模型 ID --- 
+reference_id = "" 
+# model = "speech-1.5" # 使用 reference_id 时，这个通用模型名通常不需要
+# 默认输出格式
+format = "mp3"
+# 默认 MP3 比特率
+mp3_bitrate = 128 
+
+# --- 新增 MiniMax TTS 配置节 ---
+[minimax_tts]
+# 是否启用 MiniMax TTS 功能
+enable = true
+# MiniMax T2A v2 API 的 Base URL
+base_url = "https://api.minimax.chat/v1/t2a_v2"
+# MiniMax API Key
+api_key = ""
+# MiniMax Group ID
+group_id = ""
+# 默认模型
+model = "speech-02-hd"
+# 默认声音ID
+voice_id = "saoqi_yujie"
+# 默认输出格式
+format = "mp3"
+# 默认采样率
+sample_rate = 32000
+# 默认比特率
+bitrate = 128000
+# 语速 (0.5-2.0)
+speed = 0.6
+# 音量 (0.5-2.0)
+vol = 1.0
+# 音调 (-12.0-12.0)
+pitch = 0.0
+# 默认支持语言增强模式
+language_boost = "auto" 
+# 情绪参数，可选值: "happy", "sad", "angry", "fearful", "disgusted", "surprised", "neutral"
+emotion = "happy" 
+
+# --- 新增提示词配置 ---
+[prompts]
+# 是否启用自定义提示词
+enable_custom_prompt = true
+# 系统提示词，会被添加到底层MCP提示词之后
+system_prompt = """
+你是一个友好、专业、有礼貌的助手。注意以下几点：
+1. 回答要简洁明了，避免不必要的废话
+2. 优先使用中文回答问题
+3. 在不确定的情况下，坦诚表达自己的不确定性
+4. 回答复杂问题时，尽量分点说明
+5. 避免讨论敏感话题
+"""
+# 对话开始时的欢迎语（可选）
+#greeting = "您好！我是OpenManus智能助手，有什么可以帮您的吗？" 
