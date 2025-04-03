@@ -11,6 +11,9 @@ import io # Already imported by fish_audio_sdk, but good practice
 from typing import Dict, List, Any, Optional, Tuple, AsyncGenerator
 from loguru import logger
 from datetime import datetime
+import time
+import re
+import sys # 导入sys模块，用于设置日志级别
 
 from WechatAPI import WechatAPIClient
 from utils.decorators import on_text_message, on_at_message
@@ -18,7 +21,7 @@ from utils.plugin_base import PluginBase
 
 from .api_client import GeminiClient, TTSClient, MinimaxTTSClient
 from .agent.mcp import MCPAgent, Tool
-from .tools import CalculatorTool, DateTimeTool, SearchTool, WeatherTool
+from .tools import CalculatorTool, DateTimeTool, SearchTool, WeatherTool, CodeTool
 
 # Define a constant for max duration in milliseconds
 MAX_AUDIO_DURATION_MS = 59000 # 59 seconds to be safe
@@ -133,6 +136,9 @@ class OpenManus(PluginBase):
         self.enabled = self.config.get("basic", {}).get("enable", True)
         self.trigger_word = self.config.get("basic", {}).get("trigger_keyword", "agent")
         
+        # 配置日志级别
+        self._setup_logging()
+        
         # Gemini API 配置
         gemini_config = self.config.get("gemini", {})
         self.gemini_api_key = gemini_config.get("api_key", "")
@@ -153,6 +159,7 @@ class OpenManus(PluginBase):
         self.enable_calculator = tools_config.get("enable_calculator", True)
         self.enable_datetime = tools_config.get("enable_datetime", True)
         self.enable_weather = tools_config.get("enable_weather", True)
+        self.enable_code = tools_config.get("enable_code", True)
         self.bing_api_key = tools_config.get("bing_api_key", "")
         self.serper_api_key = tools_config.get("serper_api_key", "") # Corrected key name if needed
         self.search_engine = tools_config.get("search_engine", "serper")
@@ -215,6 +222,41 @@ class OpenManus(PluginBase):
         
         logger.info(f"OpenManus插件(Gemini+TTS)初始化完成，版本: {self.version}")
         
+    def _setup_logging(self):
+        """根据配置设置日志级别"""
+        # 获取日志配置
+        log_config = self.config.get("logging", {})
+        log_level = log_config.get("log_level", "INFO")
+        show_debug = log_config.get("show_debug", False)
+        
+        # 设置日志级别
+        level_map = {
+            "DEBUG": 10,
+            "INFO": 20,
+            "WARNING": 30,
+            "ERROR": 40,
+            "CRITICAL": 50
+        }
+        
+        # 获取配置的日志级别，默认为INFO
+        level = level_map.get(log_level.upper(), 20)
+        
+        # 如果不显示DEBUG日志，且配置的日志级别小于INFO，则使用INFO级别
+        if not show_debug and level < 20:
+            level = 20
+        
+        # 移除默认的日志处理器
+        logger.remove()
+        
+        # 添加新的日志处理器，设置日志级别
+        logger.add(sys.stderr, level=level)
+        
+        logger.debug(f"日志级别已设置为: {log_level}")
+        
+        # 日志配置信息
+        self.log_tts_details = log_config.get("log_tts_details", False)
+        self.log_api_responses = log_config.get("log_api_responses", False)
+        
     def _load_config(self, config_path: str) -> Dict:
         """加载配置文件"""
         try:
@@ -231,14 +273,15 @@ class OpenManus(PluginBase):
             "gemini": {"api_key": "", "base_url": "https://generativelanguage.googleapis.com/v1beta"},
             "agent": {"default_model": "gemini-2.0-flash", "max_tokens": 8192, "temperature": 0.7, "max_steps": 10},
             "mcp": {"enable_mcp": True, "thinking_steps": 3},
-            "tools": {"enable_search": True, "enable_calculator": True, "enable_datetime": True, "enable_weather": True, "bing_api_key": "", "serper_api_key": "", "search_engine": "serper"},
+            "tools": {"enable_search": True, "enable_calculator": True, "enable_datetime": True, "enable_weather": True, "enable_code": True, "bing_api_key": "", "serper_api_key": "", "search_engine": "serper"},
             "search": {"bing_url": "https://api.bing.microsoft.com/v7.0/search", "serper_url": "https://google.serper.dev/search"},
             "weather": {"api_key": "", "base_url": "https://v3.alapi.cn/api", "weather_url": "https://v3.alapi.cn/api/tianqi", "forecast_url": "https://v3.alapi.cn/api/tianqi/seven", "index_url": "https://v3.alapi.cn/api/tianqi/index"},
             "tts": {"enable": False, "base_url": "", "api_key": "", "reference_id": None, "format": "mp3", "mp3_bitrate": 128}, # Default TTS config
             "minimax_tts": {"enable": False, "base_url": "https://api.minimax.chat/v1/t2a_v2", "api_key": "", "group_id": "", "model": "speech-02-hd", "voice_id": "male-qn-qingse", "format": "mp3", "sample_rate": 32000, "bitrate": 128000, "speed": 1.0, "vol": 1.0, "pitch": 0.0, "language_boost": "auto"},
             "memory": {"enable_memory": True, "max_history": 5, "separate_context": True},
             "prompts": {"enable_custom_prompt": False, "system_prompt": "", "greeting": ""},
-            "blocking": {"enable": True, "sensitive_words": []}
+            "blocking": {"enable": True, "sensitive_words": []},
+            "logging": {"log_level": "INFO", "show_debug": False}
         }
             
     def _init_clients(self) -> None: # Renamed
@@ -347,6 +390,13 @@ class OpenManus(PluginBase):
                     forecast_url=weather_config.get("forecast_url", "https://v3.alapi.cn/api/tianqi/seven"),
                     index_url=weather_config.get("index_url", "https://v3.alapi.cn/api/tianqi/index")
                     ))
+            if self.enable_code:
+                code_config = self.config.get("code", {})
+                tools.append(CodeTool(
+                    timeout=code_config.get("timeout", 10),
+                    max_output_length=code_config.get("max_output_length", 2000),
+                    enable_exec=code_config.get("enable_exec", True)
+                ))
             agent.register_tools(tools)
             logger.debug(f"为新请求创建并注册了 {len(tools)} 个工具的MCPAgent")
             return agent
@@ -439,6 +489,9 @@ class OpenManus(PluginBase):
                             "回复内容较长，正在生成语音消息，请稍候...", 
                             at_list
                         )
+                    
+                    # 记录完整的文本内容，便于调试
+                    logger.debug(f"准备发送到TTS的完整文本内容: '{final_answer}'")
                     
                     # 使用新的基于语义分段的方法处理并发送语音
                     await self.send_tts_with_natural_breaks(bot, target_id, final_answer, at_list)
@@ -588,7 +641,7 @@ class OpenManus(PluginBase):
         if not query and content.lower() == self.trigger_word:
             await bot.send_at_message(
                 room_id or sender_id, # Target correct chat
-                f"我是OpenManus智能助手(Gemini+TTS版)，请在触发词 \'{self.trigger_word}\' 后面输入您的问题。", 
+                f"我是OpenManus智能助手(Gemini+TTS版)，请在触发词 '{self.trigger_word}' 后面输入您的问题。", 
                 [sender_id] if room_id else [] # Only use at_list in groups
             )
             return False # Handled (sent help prompt)
@@ -664,9 +717,37 @@ class OpenManus(PluginBase):
                 
         return False  # 不是已知命令
         
+    def normalize_text_for_tts(self, text):
+        """
+        规范化处理文本以便于TTS服务处理
+        
+        Args:
+            text: 原始文本
+            
+        Returns:
+            规范化后的文本
+        """
+        if not text:
+            return ""
+            
+        # 1. 将连续多个换行符替换为单个换行
+        text = re.sub(r'\n{2,}', '\n', text)
+        
+        # 2. 处理数字列表格式（如"1."开头的行）
+        text = re.sub(r'(\n|^)(\d+)\.\s*', r'\1\2. ', text)
+        
+        # 3. 将单个换行符替换为适当的停顿标记（逗号或句号）
+        text = re.sub(r'([^，。？！.,:;?!])\n([^\n])', r'\1，\2', text)
+        
+        # 4. 删除不必要的空白字符
+        text = re.sub(r'\s+', ' ', text)
+        text = text.strip()
+        
+        return text
+
     async def send_tts_with_natural_breaks(self, bot, target_id, text, at_list=None):
         """
-        使用自然停顿点分割并发送TTS语音
+        一次性生成语音，分段发送TTS语音
         
         Args:
             bot: WechatAPIClient实例
@@ -677,108 +758,160 @@ class OpenManus(PluginBase):
         Returns:
             bool: 是否成功处理
         """
-        # 1. 使用自然停顿点分割文本
-        segments = split_text_at_natural_breaks(text)
-        logger.info(f"文本已按自然停顿分割为 {len(segments)} 个语音片段")
+        # 文本规范化处理，优化换行符和格式
+        text = self.normalize_text_for_tts(text)
         
         # 临时文件列表 (用于清理)
         temp_files_to_clean = []
         
-        # 2. 逐段合成并发送语音
-        for i, segment in enumerate(segments):
-            logger.info(f"处理语音片段 {i+1}/{len(segments)}")
+        # 1. 分段获取语音 - 将长文本分成较短的段落单独请求TTS，避免一次性请求过长文本
+        segments = split_text_at_natural_breaks(text, max_duration_seconds=30)
+        segment_count = len(segments)
+        logger.info(f"已将文本分为 {segment_count} 个语音段落进行处理")
+        
+        # 如果分段数大于1，先发送提示信息
+        if segment_count > 1:
+            await bot.send_at_message(
+                target_id, 
+                f"回复内容较长，将分{segment_count}段发送，请稍候...", 
+                at_list
+            )
+        
+        # 逐段处理和发送
+        success_count = 0
+        for i, segment_text in enumerate(segments):
+            segment_number = i + 1
             
-            # 合成语音
+            # 合成语音，带重试机制
             audio_data = None
             tts_method_used = None
             audio_format = None
             
-            # 使用MiniMax TTS
-            if self.minimax_tts_enabled and self.minimax_tts_client:
-                logger.info(f"使用MiniMax TTS合成语音片段 {i+1}")
-                audio_data = await self.minimax_tts_client.text_to_speech(
-                    text=segment,
-                    voice_id=self.minimax_tts_voice_id,
-                    model=self.minimax_tts_model,
-                    format=self.minimax_tts_format,
-                    speed=self.minimax_tts_speed,
-                    vol=self.minimax_tts_vol,
-                    pitch=self.minimax_tts_pitch,
-                    sample_rate=self.minimax_tts_sample_rate,
-                    bitrate=self.minimax_tts_bitrate,
-                    language_boost=self.minimax_tts_language_boost,
-                    emotion=self.minimax_tts_emotion
-                )
-                if audio_data:
-                    tts_method_used = "MiniMax TTS"
-                    audio_format = self.minimax_tts_format.lower()
-                    
-            # 如果MiniMax失败，使用Fish Audio TTS
-            if not audio_data and self.tts_enabled and self.tts_client:
-                logger.info(f"使用Fish Audio TTS合成语音片段 {i+1}")
-                audio_data = await self.tts_client.text_to_speech(
-                    text=segment,
-                    format=self.tts_format
-                )
-                if audio_data:
-                    tts_method_used = "Fish Audio TTS"
-                    audio_format = self.tts_format.lower()
+            # 尝试重试TTS合成，最多3次
+            max_retries = 3
+            for retry in range(max_retries):
+                try:
+                    # 使用MiniMax TTS
+                    if self.minimax_tts_enabled and self.minimax_tts_client:
+                        audio_data = await self.minimax_tts_client.text_to_speech(
+                            text=segment_text,
+                            voice_id=self.minimax_tts_voice_id,
+                            model=self.minimax_tts_model,
+                            format="mp3", # 固定使用mp3格式获取
+                            speed=self.minimax_tts_speed,
+                            vol=self.minimax_tts_vol,
+                            pitch=self.minimax_tts_pitch,
+                            sample_rate=self.minimax_tts_sample_rate,
+                            bitrate=self.minimax_tts_bitrate,
+                            language_boost=self.minimax_tts_language_boost,
+                            emotion=self.minimax_tts_emotion
+                        )
+                        if audio_data:
+                            tts_method_used = "MiniMax TTS"
+                            audio_format = "mp3" # 强制指定mp3格式
+                            break  # 成功获取音频数据，跳出重试循环
+                            
+                    # 如果MiniMax失败，使用Fish Audio TTS
+                    if not audio_data and self.tts_enabled and self.tts_client:
+                        audio_data = await self.tts_client.text_to_speech(
+                            text=segment_text,
+                            format="mp3" # 固定使用mp3格式获取
+                        )
+                        if audio_data:
+                            tts_method_used = "Fish Audio TTS"
+                            audio_format = "mp3" # 强制指定mp3格式
+                            break  # 成功获取音频数据，跳出重试循环
+                            
+                    if not audio_data and retry < max_retries - 1:
+                        await asyncio.sleep(1)  # 重试前等待一会
+                        
+                except Exception as e:
+                    logger.error(f"语音合成出错: {e}")
+                    if retry < max_retries - 1:
+                        await asyncio.sleep(1)  # 重试前等待一会
             
-            # 如果获取到语音数据，发送语音
-            if audio_data:
+            # 如果获取到语音数据，处理并发送
+            if audio_data and len(audio_data) > 100:  # 确保音频长度合理
                 if audio_format == 'pcm': 
                     audio_format = 'wav'
                     
-                # 保存为临时文件
-                temp_file = f"{uuid.uuid4()}_segment_{i+1}.{audio_format}"
-                temp_path = os.path.join(self.temp_audio_dir, temp_file)
-                temp_files_to_clean.append(temp_path)
+                # 使用唯一文件名并确保目录存在
+                unique_id = f"{int(time.time())}_{uuid.uuid4().hex[:8]}"
+                audio_file = f"segment_{segment_number}_{unique_id}.{audio_format}"
+                audio_path = os.path.join(self.temp_audio_dir, audio_file)
+                temp_files_to_clean.append(audio_path)
                 
-                # 保存音频数据
-                async with aiofiles.open(temp_path, 'wb') as f:
-                    await f.write(audio_data)
-                
-                logger.info(f"语音片段 {i+1} 已保存到: {temp_path}")
-                
-                # 读取并发送语音
-                async with aiofiles.open(temp_path, 'rb') as f:
-                    audio_bytes = await f.read()
-                
-                if not audio_bytes:
-                    logger.error(f"无法读取临时文件: {temp_path}")
-                    continue
+                try:
+                    # 确保临时目录存在
+                    os.makedirs(os.path.dirname(audio_path), exist_ok=True)
                     
-                audio_base64 = base64.b64encode(audio_bytes).decode('utf-8')
-                
-                # 发送语音消息
-                success = False
-                method_used = None
-                
-                if hasattr(bot, 'send_voice_message'):
-                    method_used = 'send_voice_message'
-                    success = await bot.send_voice_message(
-                        target_id, 
-                        audio_base64, 
-                        format=audio_format
-                    )
-                elif hasattr(bot, 'SendVoiceMessage'):
-                    method_used = 'SendVoiceMessage'
-                    success = await bot.SendVoiceMessage(
-                        target_id, 
-                        audio_base64, 
-                        format=audio_format
-                    )
-                
-                if method_used and success is not None and success:
-                    logger.info(f"语音片段 {i+1}/{len(segments)} 发送成功")
-                else:
-                    logger.error(f"发送语音片段 {i+1}/{len(segments)} 失败 (方法: {method_used}, 返回: {success})。")
-                
-                # 不同语音片段之间等待一小段时间
-                if i < len(segments) - 1:
-                    await asyncio.sleep(1.5)
+                    # 保存音频数据
+                    async with aiofiles.open(audio_path, 'wb') as f:
+                        await f.write(audio_data)
+                    
+                    # 验证音频文件是否有效
+                    try:
+                        # 尝试使用pydub加载音频文件以验证其有效性
+                        audio_segment = AudioSegment.from_file(audio_path, format=audio_format)
+                        duration_ms = len(audio_segment)
+                        
+                        # 直接使用原格式发送
+                        try:
+                            # 读取MP3音频数据
+                            async with aiofiles.open(audio_path, 'rb') as f:
+                                audio_bytes = await f.read()
+                            
+                            format_to_send = audio_format  # 直接使用MP3格式
+                            
+                        except Exception as conv_err:
+                            # 读取失败，使用原始音频
+                            logger.warning(f"读取音频数据时出错: {conv_err}")
+                            async with aiofiles.open(audio_path, 'rb') as f:
+                                audio_bytes = await f.read()
+                            format_to_send = audio_format
+                        
+                        # BASE64编码和音频检查
+                        audio_base64 = base64.b64encode(audio_bytes).decode('utf-8')
+                        
+                        # 发送语音
+                        success = await self._send_voice_message(bot, target_id, audio_base64, format_to_send, segment_number, segment_count)
+                        
+                        if success:
+                            success_count += 1
+                        else:
+                            # 发送失败时尝试发送文本
+                            await bot.send_at_message(target_id, f"(语音发送失败，文本内容): {segment_text}", at_list)
+                            
+                    except Exception as audio_err:
+                        logger.error(f"处理音频文件时出错: {audio_err}")
+                        # 音频处理出错，尝试直接发送原始数据
+                        async with aiofiles.open(audio_path, 'rb') as f:
+                            audio_bytes = await f.read()
+                            
+                        # BASE64编码和发送
+                        audio_base64 = base64.b64encode(audio_bytes).decode('utf-8')
+                        success = await self._send_voice_message(bot, target_id, audio_base64, audio_format, segment_number, segment_count)
+                        
+                        if success:
+                            success_count += 1
+                        else:
+                            # 发送失败时发送文本
+                            await bot.send_at_message(target_id, f"(语音处理出错，文本内容): {segment_text}", at_list)
+                    
+                    # 片段之间等待一小段时间
+                    if i < segment_count - 1:
+                        await asyncio.sleep(2)  # 避免发送太快
+                        
+                except Exception as e:
+                    logger.error(f"处理和发送语音段落时出错: {e}")
+                    # 出错时尝试发送文本
+                    await bot.send_at_message(target_id, f"(语音处理出错): {segment_text}", at_list)
             else:
-                logger.warning(f"语音片段 {i+1}/{len(segments)} 合成失败，跳过")
+                # 语音合成失败时发送文本
+                await bot.send_at_message(target_id, f"(语音合成失败): {segment_text}", at_list)
+        
+        # 总结发送情况
+        logger.info(f"总共处理了 {segment_count} 个语音段落，成功发送: {success_count}个")
         
         # 清理临时文件
         for temp_file in temp_files_to_clean:
@@ -788,11 +921,70 @@ class OpenManus(PluginBase):
                         await aiofiles.os.remove(temp_file)
                     else:
                         os.remove(temp_file)
-                    logger.debug(f"已清理临时语音文件: {temp_file}")
                 except OSError as oe:
                     logger.error(f"清理临时语音文件失败: {oe}")
         
         return True
+        
+    async def _send_voice_message(self, bot, target_id, audio_base64, audio_format, chunk_index=1, total_chunks=1):
+        """封装发送语音消息的逻辑，包括重试
+        
+        Args:
+            bot: WechatAPIClient实例
+            target_id: 目标ID
+            audio_base64: BASE64编码的音频数据
+            audio_format: 音频格式
+            chunk_index: 当前片段索引
+            total_chunks: 总片段数
+            
+        Returns:
+            bool: 是否发送成功
+        """
+        max_retries = 3
+        success = False
+        method_used = None
+        
+        # 尝试重试发送语音，最多3次
+        for retry in range(max_retries):
+            try:
+                if hasattr(bot, 'send_voice_message'):
+                    method_used = 'send_voice_message'
+                    send_result = await bot.send_voice_message(
+                        target_id, 
+                        audio_base64, 
+                        format=audio_format
+                    )
+                    # 检查发送结果
+                    if isinstance(send_result, tuple) and len(send_result) >= 3:
+                        success = True
+                    elif send_result is not None and send_result is not False:
+                        success = True
+                elif hasattr(bot, 'SendVoiceMessage'):
+                    method_used = 'SendVoiceMessage'
+                    send_result = await bot.SendVoiceMessage(
+                        target_id, 
+                        audio_base64, 
+                        format=audio_format
+                    )
+                    # 检查发送结果
+                    if isinstance(send_result, tuple) and len(send_result) >= 3:
+                        success = True
+                    elif send_result is not None and send_result is not False:
+                        success = True
+                else:
+                    logger.error(f"语音发送失败: API不支持发送语音消息")
+                    break
+                
+                if success:
+                    break  # 发送成功，跳出重试循环
+                elif retry < max_retries - 1:
+                    await asyncio.sleep(2)  # 重试前等待
+            except Exception as e:
+                logger.error(f"发送语音出错: {e}")
+                if retry < max_retries - 1:
+                    await asyncio.sleep(2)  # 重试前等待
+        
+        return success
 
 # --- Plugin Registration and Exports ---
 plugin_instance = OpenManus()
