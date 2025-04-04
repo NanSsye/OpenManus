@@ -13,6 +13,7 @@ from loguru import logger
 from datetime import datetime
 import time
 import re
+import aiohttp
 
 from WechatAPI import WechatAPIClient
 from utils.decorators import on_text_message, on_at_message
@@ -20,7 +21,8 @@ from utils.plugin_base import PluginBase
 
 from .api_client import GeminiClient, TTSClient, MinimaxTTSClient
 from .agent.mcp import MCPAgent, Tool
-from .tools import CalculatorTool, DateTimeTool, SearchTool, WeatherTool, CodeTool
+from .tools import CalculatorTool, DateTimeTool, SearchTool, WeatherTool, CodeTool, ModelScopeDrawingTool
+from .tools.stock_tool import StockTool
 
 # Define a constant for max duration in milliseconds
 MAX_AUDIO_DURATION_MS = 59000 # 59 seconds to be safe
@@ -146,8 +148,13 @@ class OpenManus(PluginBase):
         self.max_tokens = agent_config.get("max_tokens", 8192)
         self.temperature = agent_config.get("temperature", 0.7)
         self.max_steps = agent_config.get("max_steps", 10)
+        
+        # MCP配置
         mcp_config = self.config.get("mcp", {})
+        self.enable_mcp = mcp_config.get("enable_mcp", True)  # 读取是否启用MCP
         self.thinking_steps = mcp_config.get("thinking_steps", 3)
+        self.force_thinking = mcp_config.get("force_thinking", True)
+        self.thinking_prompt = mcp_config.get("thinking_prompt", "请深入思考这个问题，分析多个角度并考虑是否需要查询额外信息")
         
         # 工具配置
         tools_config = self.config.get("tools", {})
@@ -156,6 +163,8 @@ class OpenManus(PluginBase):
         self.enable_datetime = tools_config.get("enable_datetime", True)
         self.enable_weather = tools_config.get("enable_weather", True)
         self.enable_code = tools_config.get("enable_code", True)
+        self.enable_stock = tools_config.get("enable_stock", True)  # 是否启用股票工具
+        self.stock_data_cache_days = tools_config.get("stock_data_cache_days", 60)  # 股票数据缓存天数
         self.bing_api_key = tools_config.get("bing_api_key", "")
         self.serper_api_key = tools_config.get("serper_api_key", "") # Corrected key name if needed
         self.search_engine = tools_config.get("search_engine", "serper")
@@ -207,6 +216,9 @@ class OpenManus(PluginBase):
         self.custom_system_prompt = prompts_config.get("system_prompt", "")
         self.greeting = prompts_config.get("greeting", "")
         
+        # 启用绘图工具
+        self.enable_drawing = self.config.get("enable_drawing", True)
+        
         # 初始化 API 客户端 (Gemini and TTS)
         self.gemini_client = None
         self.tts_client = None
@@ -242,7 +254,8 @@ class OpenManus(PluginBase):
             "memory": {"enable_memory": True, "max_history": 5, "separate_context": True},
             "prompts": {"enable_custom_prompt": False, "system_prompt": "", "greeting": ""},
             "blocking": {"enable": True, "sensitive_words": []},
-            "logging": {"log_level": "INFO", "show_debug": False}
+            "logging": {"log_level": "INFO", "show_debug": False},
+            "enable_drawing": True
         }
             
     def _init_clients(self) -> None: # Renamed
@@ -323,13 +336,24 @@ class OpenManus(PluginBase):
                 system_prompt = self.custom_system_prompt
                 logger.info("使用自定义系统提示词")
             
+            # 检查是否启用MCP（多步骤思考）
+            force_thinking = self.force_thinking
+            thinking_steps = self.thinking_steps
+            if not self.enable_mcp:
+                # 如果禁用MCP，则设置为不强制思考，步骤为0
+                force_thinking = False
+                thinking_steps = 0
+                logger.info("MCP功能已禁用，将跳过思考步骤")
+            
             agent = MCPAgent(
                 client=self.gemini_client,
                 model=self.model,
                 max_tokens=self.max_tokens,
                 temperature=self.temperature,
                 max_steps=self.max_steps,
-                thinking_steps=self.thinking_steps,
+                thinking_steps=thinking_steps,  # 使用根据配置调整后的值
+                force_thinking=force_thinking,  # 使用根据配置调整后的值
+                thinking_prompt=self.thinking_prompt,
                 system_prompt=system_prompt  # 传递自定义系统提示词
             )
             
@@ -357,6 +381,16 @@ class OpenManus(PluginBase):
                     timeout=code_config.get("timeout", 10),
                     max_output_length=code_config.get("max_output_length", 2000),
                     enable_exec=code_config.get("enable_exec", True)
+                ))
+            if self.enable_stock:
+                tools.append(StockTool(data_cache_days=self.stock_data_cache_days))
+            if self.enable_drawing:
+                # 获取绘图工具配置
+                drawing_config = self.config.get("drawing", {})
+                tools.append(ModelScopeDrawingTool(
+                    api_base=drawing_config.get("api_base", "https://www.modelscope.cn/api/v1/muse/predict"),
+                    cookies=drawing_config.get("modelscope_cookies", ""),
+                    csrf_token=drawing_config.get("modelscope_csrf_token", "")
                 ))
             agent.register_tools(tools)
             logger.debug(f"为新请求创建并注册了 {len(tools)} 个工具的MCPAgent")
@@ -470,6 +504,16 @@ class OpenManus(PluginBase):
                 else:
                     logger.debug("未启用任何TTS服务，发送文本回复。")
                     
+                # 检查回复中是否包含ModelScope图片链接
+                urls = []
+                if self.enable_drawing and "modelscope-studios.oss-cn-zhangjiakou.aliyuncs.com" in final_answer and (".png" in final_answer or ".jpg" in final_answer):
+                    urls = re.findall(r'https?://modelscope-studios\.oss-cn-zhangjiakou\.aliyuncs\.com/[^\s\]]+?(?:\.png|\.jpg)', final_answer)
+                    # 创建后台任务下载图片，但不等待其完成
+                    if urls:
+                        logger.info(f"检测到回复中包含ModelScope图片链接: {urls[0]}")
+                        asyncio.create_task(self._download_and_send_image(bot, target_id, urls[0]))
+                
+                # 发送文本回复
                 await bot.send_at_message(target_id, final_answer, at_list)
                 return False # 请求已处理
                 
@@ -585,7 +629,7 @@ class OpenManus(PluginBase):
 
         content = message.get("content", message.get("Content", "")).strip()
         room_id = message.get("room_id", None) # None indicates private chat
-        sender_id = message.get("sender_id", message.get("SenderWxid", ""))
+        sender_id = message.get("SenderWxid", message.get("sender_id", ""))
         
         # Check if private chat is allowed
         if not room_id and not self.private_chat_enabled:
@@ -610,7 +654,7 @@ class OpenManus(PluginBase):
              # This case should ideally not be reached if detect_trigger_keyword is working
              logger.warning(f"handle_text 收到非预期消息: {content}")
              return True # Not a valid trigger format for this handler
-             
+        
         # 检查是否是命令（如清除记忆等）
         command_handled = await self._handle_commands(bot, message, query)
         if command_handled:
@@ -619,7 +663,125 @@ class OpenManus(PluginBase):
         # Call the core handler with the extracted query
         logger.debug(f"handle_text 调用 _handle_request, query: {query}")
         return await self._handle_request(bot, message, query)
+
+    # 检查和处理消息中的ModelScope图片链接
+    @on_text_message(priority=50)
+    async def process_modelscope_image_links(self, bot: WechatAPIClient, message: dict):
+        """检测并处理消息中的ModelScope图片链接"""
+        if not self.enabled or not self.enable_drawing:
+            return True  # 如果插件或绘图功能被禁用，跳过处理
+            
+        content = message.get("content", message.get("Content", "")).strip()
         
+        # 检查消息是否来自机器人自己（避免消息循环）
+        sender_id = message.get("SenderWxid", message.get("sender_id", ""))
+        self_id = message.get("ToWxid", "")  # 机器人自己的ID
+        if sender_id == self_id:
+            return True  # 如果是机器人自己发送的消息，跳过处理
+        
+        # 检查消息是否包含ModelScope图片链接
+        if "modelscope-studios.oss-cn-zhangjiakou.aliyuncs.com" in content and (".png" in content or ".jpg" in content):
+            # 提取所有ModelScope图片链接
+            urls = re.findall(r'https?://modelscope-studios\.oss-cn-zhangjiakou\.aliyuncs\.com/[^\s\]]+?(?:\.png|\.jpg)', content)
+            if not urls:
+                return True  # 没有找到有效的链接，继续其他处理
+                
+            # 处理消息发送目标
+            is_group = message.get("IsGroup", False)
+            user_id = message.get("SenderWxid", message.get("sender_id", ""))
+            group_id = message.get("FromWxid") if is_group else None
+            target_id = group_id if is_group else user_id
+            
+            # 创建后台任务下载并发送图片，不阻塞当前消息处理
+            asyncio.create_task(self._download_and_send_image(bot, target_id, urls[0]))
+            
+        return True  # 继续处理其他消息
+            
+    async def _download_and_send_image(self, bot: WechatAPIClient, target_id: str, image_url: str):
+        """后台下载并发送ModelScope图片
+        
+        Args:
+            bot: WechatAPIClient实例
+            target_id: 目标ID（群ID或用户ID）
+            image_url: 图片URL
+        """
+        try:
+            logger.info(f"【图片处理】开始后台下载图片: {image_url} 发送到: {target_id}")
+            
+            # 创建绘图工具实例
+            agent = self._create_and_register_agent()
+            if not agent:
+                logger.error("【图片处理】无法创建代理实例来处理图片下载")
+                return
+                
+            # 获取ModelScopeDrawingTool实例
+            drawing_tool = None
+            # 直接创建一个新的绘图工具实例，避免使用agent.tools
+            drawing_config = self.config.get("drawing", {})
+            drawing_tool = ModelScopeDrawingTool(
+                api_base=drawing_config.get("api_base", "https://www.modelscope.cn/api/v1/muse/predict"),
+                cookies=drawing_config.get("modelscope_cookies", ""),
+                csrf_token=drawing_config.get("modelscope_csrf_token", "")
+            )
+            
+            logger.info(f"【图片处理】成功创建绘图工具，准备下载图片: {image_url}")
+                
+            # 下载图片 - 改为直接返回图片内容
+            local_path = None
+            image_data = None
+            
+            try:
+                # 直接下载图片内容
+                async with aiohttp.ClientSession() as session:
+                    headers = {
+                        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36",
+                    }
+                    async with session.get(image_url, headers=headers) as response:
+                        if response.status != 200:
+                            logger.error(f"【图片处理】下载图片失败，状态码: {response.status}")
+                            return None
+                        
+                        # 读取图片内容
+                        image_data = await response.read()
+                        data_length = len(image_data)
+                        logger.debug(f"【图片处理】成功读取图片数据，大小: {data_length} 字节")
+                        
+                        if data_length < 100:
+                            logger.error(f"【图片处理】图片数据异常，太小: {data_length} 字节")
+                            return None
+                            
+                        logger.info(f"【图片处理】图片已成功下载，大小: {data_length} 字节")
+            except Exception as e:
+                logger.exception(f"【图片处理】下载图片时出错: {e}")
+                return
+                
+            if not image_data:
+                logger.error("【图片处理】下载图片失败，未获取到图片数据")
+                return
+                
+            # 延迟一段时间后再发送图片（避免与文本回复过于接近）
+            await asyncio.sleep(1.5)
+                
+            # 发送图片 - 直接使用图片内容而非文件路径
+            try:
+                if hasattr(bot, 'send_image_message'):
+                    logger.info(f"【图片处理】使用send_image_message方法发送图片")
+                    await bot.send_image_message(target_id, image=image_data)  # 直接传递图片内容
+                    logger.info(f"【图片处理】成功发送图片到: {target_id}")
+                elif hasattr(bot, 'SendImageMessage'):
+                    logger.info(f"【图片处理】使用SendImageMessage方法发送图片")
+                    await bot.SendImageMessage(target_id, image=image_data)  # 直接传递图片内容
+                    logger.info(f"【图片处理】成功发送图片到: {target_id}")
+                else:
+                    logger.error("【图片处理】API不支持发送图片消息")
+                    return
+            except Exception as e:
+                logger.exception(f"【图片处理】发送图片异常: {e}")
+                
+        except Exception as e:
+            logger.exception(f"【图片处理】后台处理图片时发生异常: {e}")
+            return
+
     def get_help(self) -> str:
         """返回插件帮助信息"""
         if not self.enabled:
