@@ -9,8 +9,10 @@ OpenManus 是一个增强型智能代理插件，基于 Gemini 大型语言模�
 - **多步骤思考**: 使用 MCP (多步认知过程) 方法进行复杂问题分析
 - **工具集成**: 支持多种工具调用，包括计算器、日期时间、搜索等
 - **语音合成**: 支持 Fish Audio 和 MiniMax T2A v2 双引擎语音合成
+- **图像生成**: 支持 ModelScope 文本生成图像功能
 - **丰富交互**: 支持私聊和群聊，可通过触发词或@方式激活
 - **灵活配置**: 支持多种配置选项，包括模型选择、语音参数、工具启用等
+  **股票工具**: 查询股票数据
 
 ## 安装方法
 
@@ -66,9 +68,21 @@ enable_search = true          # 是否启用搜索工具
 enable_calculator = true      # 是否启用计算器工具
 enable_datetime = true        # 是否启用日期时间工具
 enable_weather = true         # 是否启用天气工具
+enable_code = true            # 是否启用代码工具
+enable_stock = true           # 是否启用股票工具
+enable_drawing = true         # 是否启用绘图工具
 bing_api_key = ""             # Bing搜索API密钥
 serper_api_key = ""           # Serper搜索API密钥
 search_engine = "serper"      # 搜索引擎选择(bing或serper)
+
+[drawing]
+# 绘图工具配置
+api_base = "https://www.modelscope.cn/api/v1/muse/predict"  # ModelScope API基础URL
+max_wait_time = 120          # 图像生成最大等待时间(秒)
+default_model = "default"    # 默认模型类型：default, anime, realistic
+default_ratio = "1:1"        # 默认图像比例：1:1, 4:3, 3:4, 16:9, 9:16
+modelscope_cookies = ""      # ModelScope网站Cookie，用于认证
+modelscope_csrf_token = ""   # ModelScope网站CSRF令牌
 
 [tts]
 # Fish Audio TTS配置
@@ -147,10 +161,28 @@ agent 清除记忆
    - 示例: `agent 搜索 2023年经济增长率`
 
 4. **天气**: 获取天气信息(需配置 API 密钥)
+
    - 用法: `agent 天气 <城市>`
    - 示例: `agent 查询北京天气`
    - 高级示例: `agent 查询江西南昌的天气状况`
    - API 来源: ALAPI 天气接口，提供全面的天气数据，包括天气状况、温度、湿度、风力、空气质量和生活指数等
+
+5. **代码工具**: 生成和执行代码
+
+   - 用法: `agent 生成代码 <需求>`
+   - 示例: `agent 生成一个Python爬虫程序`
+
+6. **股票工具**: 查询股票数据
+
+   - 用法: `agent 查询股票 <股票代码>`
+   - 示例: `agent 查询上证指数最近一周走势`
+
+7. **绘图工具**: 根据文本描述生成图像
+   - 用法: `agent 绘制 <图像描述>`
+   - 示例: `agent 绘制一只可爱的小猫咪`
+   - 支持多种风格: 默认风格、动漫风格、写实风格
+   - 支持多种图像比例: 1:1、4:3、3:4、16:9、9:16
+   - 高级示例: `agent 绘制一个未来科技城市，采用写实风格，比例为16:9`
 
 ## 语音合成功能
 
@@ -170,6 +202,84 @@ OpenManus 支持两种语音合成引擎：
 
 当同时启用两种 TTS 引擎时，系统会优先使用 MiniMax TTS，如果失败则回退到 Fish Audio TTS。
 
+## 图像生成功能
+
+OpenManus 集成了 ModelScope 的图像生成功能，可以根据用户的文本描述生成高质量图像：
+
+1. **基本使用**:
+
+   - 直接发送: `agent 绘制 <图像描述>`
+   - 示例: `agent 绘制一片星空下的城市夜景`
+
+2. **风格选择**:
+
+   - 默认风格: 通用画面生成
+   - 动漫风格: 适合生成动漫风格的图像
+   - 写实风格: 适合生成逼真的照片风格图像
+
+3. **图像比例**:
+
+   - 支持多种比例: 1:1(方形)、4:3(横向)、3:4(纵向)、16:9(宽屏)、9:16(手机屏)
+   - 指定比例示例: `agent 绘制一片大海，比例为16:9`
+
+4. **高级提示**:
+
+   - 描述越详细，生成的图像质量越高
+   - 建议使用英文描述获得更好效果
+   - 可以指定风格、光照、画面构图等细节
+
+5. **使用示例**:
+   ```
+   agent 绘制一个少女站在花丛中，动漫风格，比例3:4
+   ```
+   ```
+   agent 绘制 a futuristic cityscape with flying cars and neon lights, photorealistic style
+   ```
+
+注意：使用绘图功能需要先在 `config.toml` 的 `[drawing]` 部分配置正确的 ModelScope Cookie 和 CSRF Token。
+
+## 股票查询功能
+
+OpenManus 集成了 AKShare 金融数据查询功能，支持查询 A 股、港股和美股的股票数据：
+
+1. **基本使用**:
+
+   - 直接发送: `agent 查询股票 <股票代码>`
+   - 示例: `agent 查询股票 600519`（贵州茅台）
+
+2. **支持的市场**:
+
+   - A 股市场: 股票代码前可添加`sh`或`sz`（如`sh600519`或直接`600519`）
+   - 港股市场: 股票代码前需添加`hk`（如`hk00700`表示腾讯控股）
+   - 美股市场: 股票代码前需添加`us`（如`usAAPL`表示苹果公司）
+
+3. **查询类型**:
+
+   - 基本信息: `agent 查询股票信息 <股票代码>`（获取股票名称、行业、市值等基本信息）
+   - 实时行情: `agent 查询股票实时行情 <股票代码>`（获取最新价格、涨跌幅等实时数据）
+   - 历史数据: `agent 查询股票历史数据 <股票代码> <开始日期> <结束日期>`（获取指定时间段的历史价格）
+   - 综合查询: `agent 分析股票 <股票代码>`（获取综合分析，包括基本面、技术面等）
+
+4. **高级查询示例**:
+
+   ```
+   agent 对比分析贵州茅台和五粮液近一个月的股价走势
+   ```
+
+   ```
+   agent 查询恒生指数今日行情和成分股表现
+   ```
+
+   ```
+   agent 分析美股特斯拉公司最近一季度财报数据
+   ```
+
+5. **技术指标分析**:
+   - 支持常见技术指标分析，如 MA（均线）、MACD、KDJ、RSI 等
+   - 示例: `agent 分析茅台股票的MACD指标`
+
+注意：股票数据功能依赖于 AKShare 库的数据接口，数据可能会有略微延迟。实时行情数据通常有 15-30 分钟延迟，遵循金融数据使用规范。
+
 ## 开发文档
 
 ### 项目结构
@@ -184,7 +294,9 @@ plugins/OpenManus/
 ├── agent/
 │   └── mcp.py          # MCP代理实现
 └── tools/
-    └── basic_tools.py  # 基础工具实现
+    ├── basic_tools.py  # 基础工具实现
+    ├── stock_tool.py   # 股票工具实现
+    └── drawing_tool.py # 绘图工具实现
 ```
 
 ### 扩展开发
@@ -458,6 +570,8 @@ loguru>=0.6.0
 pydub>=0.25.1
 aiofiles>=23.1.0
 
+# Gemini SDK（用于上下文对话）
+google-generativeai>=0.3.0
 
 # 音频处理依赖
 fish-audio-sdk>=1.0.0  # Fish Audio TTS（可选）
@@ -483,7 +597,13 @@ python-dateutil>=2.8.2  # 日期时间工具
 2. 创建 API Token 并获取密钥
 3. 将密钥填入`config.toml`的`weather_api_key`字段
 
+### 上下文对话问题
 
+如果上下文对话功能不工作，请检查:
+
+1. `gemini.use_sdk`是否设置为`true`
+2. 是否已安装 Google Generative AI SDK (`pip install google-generativeai`)
+3. `memory.enable_memory`是否设置为`true`
 
 ### 语音合成问题
 
@@ -492,6 +612,18 @@ python-dateutil>=2.8.2  # 日期时间工具
 1. 相应 TTS 引擎的`enable`是否设置为`true`
 2. API 密钥和其他必要参数是否已正确配置
 3. 音频参数是否设置为合理的值
+
+### 绘图功能问题
+
+如果绘图功能不工作，请检查:
+
+1. `tools.enable_drawing`是否设置为`true`
+2. ModelScope 的 Cookie 和 CSRF Token 是否已正确设置
+3. 获取 Cookie 和 CSRF Token 的方法:
+   - 登录 ModelScope 网站 (https://www.modelscope.cn)
+   - 打开浏览器开发者工具，找到 Network 标签
+   - 刷新页面，找到任意请求
+   - 在请求头中找到"Cookie"值和"x-csrf-token"值
 
 ### 性能优化
 
