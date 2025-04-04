@@ -27,7 +27,6 @@ api_key = ""      # 填入你的 Google AI Studio 或 Vertex AI API Key
 # Gemini API 端点 (Google AI Studio 示例, Vertex AI 不同)
 base_url = "https://generativelanguage.googleapis.com/v1beta"
 
-
 [agent]
 # 代理配置
 default_model = "gemini-2.0-flash"  # 默认使用的 Gemini 模型
@@ -37,8 +36,10 @@ temperature = 0.7         # 温度参数 (建议值，可以调整)
 
 [mcp]
 # MCP代理配置
-enable_mcp = true        # 是否启用MCP代理
+enable_mcp = false        # 是否启用MCP代理
 thinking_steps = 3       # 思考步骤数量 (可以适当减少测试Gemini性能)
+force_thinking = true    # 强制思考模式启用
+thinking_prompt = "请深入思考这个问题，分析多个角度并考虑是否需要查询额外信息，然后提供具体的解决方案。思考要全面但不要在最终回答中展示思考过程。"
 task_planning = true     # 是否启用任务规划 (此项在当前MCP实现中可能未完全使用)
 
 [tools]
@@ -51,12 +52,24 @@ enable_code = true       # 是否启用代码工具
 search_engine = "serper"  # 搜索引擎类型: bing 或 serper
 bing_api_key = ""        # Bing搜索API密钥
 serper_api_key = ""      # Serper.dev API密钥
+enable_stock = true      # 是否启用股票工具
+stock_data_cache_days = 60  # 股票数据缓存天数
+enable_drawing = true    # 是否启用绘图工具
 
 # 代码工具配置
 [code]
 timeout = 10             # 代码执行超时时间(秒)
 max_output_length = 2000 # 最大输出长度
 enable_exec = true       # 是否允许执行代码(设为false只生成不执行)
+
+# 绘图工具配置
+[drawing]
+api_base = "https://www.modelscope.cn/api/v1/muse/predict"  # ModelScope API基础URL
+max_wait_time = 120      # 绘图任务等待最大时间(秒)
+default_model = "default" # 默认模型类型：default, anime, realistic
+default_ratio = "1:1"    # 默认图像比例：1:1, 4:3, 3:4, 16:9, 9:16
+modelscope_cookies = ""  # ModelScope网站Cookie，用于认证
+modelscope_csrf_token = "" # ModelScope网站CSRF令牌
 
 [search]
 # 搜索工具配置
