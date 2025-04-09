@@ -9,6 +9,7 @@ from .weather_tool import WeatherTool
 from .code_tool import CodeTool
 from .stock_tool import StockTool
 from .drawing_tool import ModelScopeDrawingTool
+from .firecrawl_tool import FirecrawlTool
 
 __all__ = [
     "CalculatorTool",
@@ -18,4 +19,5 @@ __all__ = [
     "CodeTool",
     "StockTool",
     "ModelScopeDrawingTool",
+    "FirecrawlTool",
 ] 

@@ -21,8 +21,10 @@ from utils.plugin_base import PluginBase
 
 from .api_client import GeminiClient, TTSClient, MinimaxTTSClient
 from .agent.mcp import MCPAgent, Tool
-from .tools import CalculatorTool, DateTimeTool, SearchTool, WeatherTool, CodeTool, ModelScopeDrawingTool
+from .tools import CalculatorTool, DateTimeTool, SearchTool, WeatherTool, CodeTool, ModelScopeDrawingTool, FirecrawlTool
 from .tools.stock_tool import StockTool
+# from .tools.virtual_tryon_tool import VirtualTryOnTool  # 此模块暂时缺失
+# from .memory import MessageMemory  # 此模块暂时缺失
 
 # Define a constant for max duration in milliseconds
 MAX_AUDIO_DURATION_MS = 59000 # 59 seconds to be safe
@@ -231,32 +233,111 @@ class OpenManus(PluginBase):
         logger.info(f"OpenManus插件(Gemini+TTS)初始化完成，版本: {self.version}")
         
     def _load_config(self, config_path: str) -> Dict:
-        """加载配置文件"""
+        """Load configuration from the given path."""
+        try:
+            import tomllib
+        except ImportError:
+            try:
+                import toml as tomllib
+            except ImportError:
+                logger.error("TOML库未安装，请使用'pip install tomli' (Python 3.11以下) 或使用Python 3.11+")
+                return {}
+                
         try:
             with open(config_path, "rb") as f:
-                return tomli.load(f)
-        except FileNotFoundError:
-            logger.error(f"配置文件 {config_path} 未找到，使用默认配置。")
-        except Exception as e:
-            logger.error(f"加载配置文件失败: {str(e)}，使用默认配置。")
+                config = tomllib.load(f)
+                
+            # Load basic configuration
+            basic_config = config.get("basic", {})
+            self.enable = basic_config.get("enable", True)
+            self.trigger_keyword = basic_config.get("trigger_keyword", "agent")
+            self.respond_to_at = basic_config.get("respond_to_at", True)
+            self.allow_private_chat = basic_config.get("allow_private_chat", True)
             
-        # 返回包含Gemini和TTS的默认配置，以防加载失败
-        return {
-            "basic": {"enable": True, "trigger_keyword": "agent", "allow_private_chat": True, "respond_to_at": True},
-            "gemini": {"api_key": "", "base_url": "https://generativelanguage.googleapis.com/v1beta"},
-            "agent": {"default_model": "gemini-2.0-flash", "max_tokens": 8192, "temperature": 0.7, "max_steps": 10},
-            "mcp": {"enable_mcp": True, "thinking_steps": 3},
-            "tools": {"enable_search": True, "enable_calculator": True, "enable_datetime": True, "enable_weather": True, "enable_code": True, "bing_api_key": "", "serper_api_key": "", "search_engine": "serper"},
-            "search": {"bing_url": "https://api.bing.microsoft.com/v7.0/search", "serper_url": "https://google.serper.dev/search"},
-            "weather": {"api_key": "", "base_url": "https://v3.alapi.cn/api", "weather_url": "https://v3.alapi.cn/api/tianqi", "forecast_url": "https://v3.alapi.cn/api/tianqi/seven", "index_url": "https://v3.alapi.cn/api/tianqi/index"},
-            "tts": {"enable": False, "base_url": "", "api_key": "", "reference_id": None, "format": "mp3", "mp3_bitrate": 128}, # Default TTS config
-            "minimax_tts": {"enable": False, "base_url": "https://api.minimax.chat/v1/t2a_v2", "api_key": "", "group_id": "", "model": "speech-02-hd", "voice_id": "male-qn-qingse", "format": "mp3", "sample_rate": 32000, "bitrate": 128000, "speed": 1.0, "vol": 1.0, "pitch": 0.0, "language_boost": "auto"},
-            "memory": {"enable_memory": True, "max_history": 5, "separate_context": True},
-            "prompts": {"enable_custom_prompt": False, "system_prompt": "", "greeting": ""},
-            "blocking": {"enable": True, "sensitive_words": []},
-            "logging": {"log_level": "INFO", "show_debug": False},
-            "enable_drawing": True
-        }
+            # Load API configuration
+            gemini_config = config.get("gemini", {})
+            self.api_key = gemini_config.get("api_key", "")
+            self.base_url = gemini_config.get("base_url", "https://generativelanguage.googleapis.com/v1beta")
+            
+            # Load agent configuration
+            agent_config = config.get("agent", {})
+            self.model = agent_config.get("default_model", "gemini-1.5-pro")
+            self.max_steps = agent_config.get("max_steps", 10)
+            self.max_tokens = agent_config.get("max_tokens", 8000)
+            self.temperature = agent_config.get("temperature", 0.7)
+            
+            # Load MCP configuration
+            mcp_config = config.get("mcp", {})
+            self.enable_mcp = mcp_config.get("enable_mcp", True)
+            self.thinking_steps = mcp_config.get("thinking_steps", 3)
+            self.force_thinking = mcp_config.get("force_thinking", True)
+            self.thinking_prompt = mcp_config.get("thinking_prompt", "")
+            
+            # Load tools configuration
+            tools_config = config.get("tools", {})
+            self.enable_search = tools_config.get("enable_search", True)
+            self.enable_calculator = tools_config.get("enable_calculator", True)
+            self.enable_datetime = tools_config.get("enable_datetime", True)
+            self.enable_weather = tools_config.get("enable_weather", True)
+            self.enable_code = tools_config.get("enable_code", True)
+            self.search_engine = tools_config.get("search_engine", "bing")
+            self.bing_api_key = tools_config.get("bing_api_key", "")
+            self.serper_api_key = tools_config.get("serper_api_key", "")
+            self.enable_stock = tools_config.get("enable_stock", True)
+            self.stock_data_cache_days = tools_config.get("stock_data_cache_days", 60)
+            self.enable_drawing = tools_config.get("enable_drawing", True)
+            
+            # Load memory configuration
+            memory_config = config.get("memory", {})
+            self.enable_memory = memory_config.get("enable_memory", True)
+            self.max_history = memory_config.get("max_history", 20)
+            self.separate_context = memory_config.get("separate_context", True)
+            self.memory_expire_hours = memory_config.get("memory_expire_hours", 24)
+            
+            # Load TTS configuration
+            tts_config = config.get("tts", {})
+            self.tts_enabled = tts_config.get("enable", False)
+            self.tts_base_url = tts_config.get("base_url", "https://api.fish.audio")
+            self.tts_api_key = tts_config.get("api_key", "")
+            self.tts_reference_id = tts_config.get("reference_id", "")
+            self.tts_format = tts_config.get("format", "mp3")
+            self.tts_mp3_bitrate = tts_config.get("mp3_bitrate", 128)
+            
+            # Load MiniMax TTS configuration
+            minimax_tts_config = config.get("minimax_tts", {})
+            self.minimax_tts_enabled = minimax_tts_config.get("enable", False)
+            self.minimax_tts_base_url = minimax_tts_config.get("base_url", "https://api.minimax.chat/v1/t2a_v2")
+            self.minimax_tts_api_key = minimax_tts_config.get("api_key", "")
+            self.minimax_tts_group_id = minimax_tts_config.get("group_id", "")
+            self.minimax_tts_model = minimax_tts_config.get("model", "speech-02-hd")
+            self.minimax_tts_voice_id = minimax_tts_config.get("voice_id", "saoqi_yujie")
+            self.minimax_tts_format = minimax_tts_config.get("format", "mp3")
+            self.minimax_tts_sample_rate = minimax_tts_config.get("sample_rate", 32000)
+            self.minimax_tts_bitrate = minimax_tts_config.get("bitrate", 128000)
+            self.minimax_tts_speed = minimax_tts_config.get("speed", 0.6)
+            self.minimax_tts_vol = minimax_tts_config.get("vol", 1.0)
+            self.minimax_tts_pitch = minimax_tts_config.get("pitch", 0.0)
+            self.minimax_tts_language_boost = minimax_tts_config.get("language_boost", "auto")
+            self.minimax_tts_emotion = minimax_tts_config.get("emotion", "neutral")
+            
+            # 加载虚拟试衣工具配置
+            tryon_config = config.get("tryon", {})
+            self.enable_tryon = tryon_config.get("enable", True)
+            
+            # Load custom prompt configuration
+            prompts_config = config.get("prompts", {})
+            self.enable_custom_prompt = prompts_config.get("enable_custom_prompt", False)
+            self.custom_system_prompt = prompts_config.get("system_prompt", "")
+            self.custom_greeting = prompts_config.get("greeting", "")
+            
+            return config
+            
+        except FileNotFoundError:
+            logger.error(f"配置文件未找到: {config_path}")
+            return {}
+        except Exception as e:
+            logger.exception(f"加载配置失败: {e}")
+            return {}
             
     def _init_clients(self) -> None: # Renamed
         """初始化 API 客户端 (Gemini and TTS)"""
@@ -390,8 +471,21 @@ class OpenManus(PluginBase):
                 tools.append(ModelScopeDrawingTool(
                     api_base=drawing_config.get("api_base", "https://www.modelscope.cn/api/v1/muse/predict"),
                     cookies=drawing_config.get("modelscope_cookies", ""),
-                    csrf_token=drawing_config.get("modelscope_csrf_token", "")
+                    csrf_token=drawing_config.get("modelscope_csrf_token", ""),
+                    max_wait_time=drawing_config.get("max_wait_time", 120)
                 ))
+            # 添加虚拟试衣工具
+            if self.enable_tryon:
+                # 获取虚拟试衣工具配置
+                tryon_config = self.config.get("tryon", {})
+                # tools.append(VirtualTryOnTool(
+                #     api_base=tryon_config.get("api_base", "https://kwai-kolors-kolors-virtual-try-on.ms.show"),
+                #     modelscope_cookies=tryon_config.get("modelscope_cookies", ""),
+                #     modelscope_csrf_token=tryon_config.get("modelscope_csrf_token", ""),
+                #     max_wait_time=tryon_config.get("max_wait_time", 120)
+                # ))
+                # 暂时跳过虚拟试衣工具（模块缺失）
+                logger.warning("虚拟试衣工具模块缺失，已跳过初始化")
             agent.register_tools(tools)
             logger.debug(f"为新请求创建并注册了 {len(tools)} 个工具的MCPAgent")
             return agent
@@ -660,6 +754,12 @@ class OpenManus(PluginBase):
         if command_handled:
             return False  # 命令已处理，不需要继续
 
+        # 检查是否是绘图命令
+        if query.lower().startswith("绘制") and self.enable_drawing:
+            draw_handled = await self._handle_drawing_command(bot, message, query[2:].strip())
+            if draw_handled:
+                return False  # 绘图命令已处理，不需要继续
+
         # Call the core handler with the extracted query
         logger.debug(f"handle_text 调用 _handle_request, query: {query}")
         return await self._handle_request(bot, message, query)
@@ -721,7 +821,8 @@ class OpenManus(PluginBase):
             drawing_tool = ModelScopeDrawingTool(
                 api_base=drawing_config.get("api_base", "https://www.modelscope.cn/api/v1/muse/predict"),
                 cookies=drawing_config.get("modelscope_cookies", ""),
-                csrf_token=drawing_config.get("modelscope_csrf_token", "")
+                csrf_token=drawing_config.get("modelscope_csrf_token", ""),
+                max_wait_time=drawing_config.get("max_wait_time", 120)
             )
             
             logger.info(f"【图片处理】成功创建绘图工具，准备下载图片: {image_url}")
@@ -1108,6 +1209,195 @@ class OpenManus(PluginBase):
                     await asyncio.sleep(2)  # 重试前等待
         
         return success
+
+    async def _handle_drawing_command(self, bot: WechatAPIClient, message: dict, prompt: str) -> bool:
+        """专门处理绘图命令
+        
+        Args:
+            bot: WechatAPIClient实例
+            message: 消息字典
+            prompt: 绘图提示词（已去除"绘制"前缀）
+            
+        Returns:
+            bool: 是否成功处理
+        """
+        if not self.enable_drawing:
+            return False
+            
+        # 提取发送目标
+        from_user_id = message.get("sender_id", message.get("SenderWxid", ""))
+        room_id = message.get("room_id", message.get("FromWxid", ""))
+        target_id = room_id or from_user_id
+        
+        # 创建绘图工具
+        drawing_config = self.config.get("drawing", {})
+        drawing_tool = ModelScopeDrawingTool(
+            api_base=drawing_config.get("api_base", "https://www.modelscope.cn/api/v1/muse/predict"),
+            cookies=drawing_config.get("modelscope_cookies", ""),
+            csrf_token=drawing_config.get("modelscope_csrf_token", ""),
+            max_wait_time=drawing_config.get("max_wait_time", 120)
+        )
+        
+        # 获取所有可用的模型名称（包括自定义LoRA）
+        available_models = list(drawing_tool.model_config.keys()) + ["custom"]
+        
+        # 构建模型正则表达式模式
+        models_pattern = "|".join([re.escape(model) + "风格" for model in available_models])
+        # 添加默认格式
+        models_pattern += "|默认风格|动漫风格|写实风格"
+        
+        # 提取模型和比例参数
+        model_match = re.search(fr'({models_pattern})', prompt)
+        ratio_match = re.search(r'比例为?(1:1|4:3|3:4|16:9|9:16)', prompt)
+        
+        # 默认使用配置文件中的默认模型
+        model_name = drawing_config.get("default_model", "rioko")
+        if model_match:
+            style = model_match.group(1)
+            if style == "默认风格":
+                model_name = "default"
+            elif style == "动漫风格":
+                model_name = "anime"
+            elif style == "写实风格":
+                model_name = "realistic"
+            elif style.endswith("风格"):
+                # 提取自定义模型名（去掉"风格"后缀）
+                custom_name = style[:-2]
+                if custom_name in available_models:
+                    model_name = custom_name
+        
+        ratio = drawing_config.get("default_ratio", "1:1")
+        if ratio_match:
+            ratio = ratio_match.group(1)
+        
+        # 提取自定义LoRA参数
+        lora_model_match = re.search(r'使用LoRA[模型]?[:|：]?\s*(\S+)', prompt)
+        lora_scale_match = re.search(r'LoRA权重[:|：]?\s*(\d+\.?\d*)', prompt)
+        
+        lora_model_id = ""
+        lora_scale = drawing_config.get("default_lora_scale", 1.0)
+        
+        if lora_model_match:
+            lora_model_id = lora_model_match.group(1)
+            model_name = "custom"
+        
+        if lora_scale_match:
+            try:
+                lora_scale = float(lora_scale_match.group(1))
+            except ValueError:
+                pass
+        
+        # 移除风格、比例和LoRA相关参数，保留纯净的提示词
+        clean_prompt = prompt
+        clean_prompt = re.sub(fr'({models_pattern}|比例为?(?:1:1|4:3|3:4|16:9|9:16))', '', clean_prompt)
+        clean_prompt = re.sub(r'使用LoRA[模型]?[:|：]?\s*\S+', '', clean_prompt)
+        clean_prompt = re.sub(r'LoRA权重[:|：]?\s*\d+\.?\d*', '', clean_prompt)
+        clean_prompt = clean_prompt.strip()
+        
+        # 发送等待消息
+        await bot.send_text_message(target_id, f"正在生成图像，请稍候...")
+        
+        try:
+            # 准备绘图参数
+            drawing_params = {
+                "prompt": clean_prompt,
+                "model": model_name,
+                "ratio": ratio
+            }
+            
+            # 添加自定义LoRA参数
+            if model_name == "custom":
+                drawing_params["lora_model_id"] = lora_model_id
+                drawing_params["lora_scale"] = lora_scale
+            
+            # 执行绘图
+            logger.info(f"执行绘图: {drawing_params}")
+            result = await drawing_tool.execute(**drawing_params)
+            
+            # 处理绘图结果
+            if result and result.get("success"):
+                # 获取图片URL
+                image_url = result.get("image_url")
+                if image_url:
+                    # 发送图片URL和提示词信息
+                    await bot.send_text_message(
+                        target_id, 
+                        f"✅ 图像已生成！\n使用模型: {result.get('model', model_name)}\n{result.get('lora_info', '')}\n图像链接: {image_url}"
+                    )
+                    
+                    # 尝试发送实际图片
+                    try:
+                        await drawing_tool.send_generated_image(bot, target_id, image_url)
+                    except Exception as img_err:
+                        logger.error(f"发送生成图片时出错: {img_err}")
+                        await bot.send_text_message(target_id, f"⚠️ 图片发送失败，请通过链接查看")
+                else:
+                    await bot.send_text_message(target_id, "⚠️ 图像已生成但URL为空，请稍后重试")
+            else:
+                # 处理错误情况
+                error_msg = result.get("error", "未知错误") if result else "图像生成失败"
+                await bot.send_text_message(target_id, f"❌ 生成图像失败: {error_msg}")
+            
+            return True  # 命令已处理
+        except Exception as e:
+            logger.exception(f"处理绘图命令时出错: {e}")
+            await bot.send_text_message(target_id, f"❌ 处理绘图命令时出错: {str(e)}")
+            return True  # 命令已处理但出错
+
+    def init_tools(self) -> List[Tool]:
+        """初始化工具列表"""
+        tools = []
+        
+        # 添加计算器工具
+        tools.append(CalculatorTool())
+        
+        # 添加日期时间工具
+        tools.append(DateTimeTool())
+        
+        # 添加搜索工具
+        search_config = self.config.get("search", {})
+        search_api_key = search_config.get("api_key", "")
+        search_url = search_config.get("api_url", "")
+        self.search_engine = search_config.get("engine", "bing").lower()
+        tools.append(SearchTool(api_key=search_api_key, search_url=search_url, search_engine=self.search_engine))
+        
+        # 添加天气工具
+        weather_config = self.config.get("weather", {})
+        weather_api_key = weather_config.get("api_key", "")
+        tools.append(WeatherTool(
+            api_key=weather_api_key,
+        ))
+        
+        # 添加代码工具
+        code_config = self.config.get("code", {})
+        code_interpreter = code_config.get("enable", True)
+        if code_interpreter:
+            tools.append(CodeTool())
+        
+        # 添加绘图工具
+        if self.enable_drawing:
+            drawing_config = self.config.get("drawing", {})
+            drawing_api_key = drawing_config.get("api_key", "")
+            drawing_api_url = drawing_config.get("api_url", "")
+            tools.append(ModelScopeDrawingTool(api_key=drawing_api_key, api_url=drawing_api_url))
+            
+        # 添加虚拟试衣工具
+        tryon_config = self.config.get("tryon", {})
+        if tryon_config.get("enable", False):
+            # 这里仅为占位，实际在初始化后单独注册
+            pass
+            
+        # 添加 Firecrawl 工具
+        firecrawl_config = self.config.get("firecrawl", {})
+        firecrawl_api_key = firecrawl_config.get("api_key", "")
+        if firecrawl_api_key and firecrawl_api_key != "YOUR_FIRECRAWL_API_KEY":
+            tools.append(FirecrawlTool(api_key=firecrawl_api_key))
+            logger.info("Firecrawl 工具已启用")
+        else:
+            logger.warning("Firecrawl API 密钥未配置或未更改默认值，工具将使用模拟数据")
+            tools.append(FirecrawlTool())  # 使用默认初始化，将提供模拟数据
+            
+        return tools
 
 # --- Plugin Registration and Exports ---
 plugin_instance = OpenManus()
